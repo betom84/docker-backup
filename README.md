@@ -13,6 +13,8 @@ usage: ./docker_backup [options]
 
   -container string
         Comma separated list of Docker container names
+  -hold
+        Hold container(s) during backup
   -host string
         TCP Docker host (port 2375)
   -target string
