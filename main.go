@@ -15,6 +15,7 @@ var (
 	host      = flag.String("host", "", "TCP Docker host (port 2375)")
 	container = flag.String("container", "", "Comma separated list of Docker container names")
 	target    = flag.String("target", "", "CIFS volume address (user:pass@host/path)")
+	hold      = flag.Bool("hold", false, "Hold container during backup")
 )
 
 func main() {
@@ -45,20 +46,36 @@ func main() {
 	}
 	defer target.Destroy(ctx)
 
-	for _, c := range strings.Split(*container, ",") {
-		err := runContainerBackup(ctx, cli, *target, c)
+	containers := strings.Split(*container, ",")
+	sources := make([]*docker.Container, len(containers))
+
+	for i, c := range containers {
+		source, err := docker.FindContainer(ctx, cli, c)
+		if err != nil {
+			fmt.Printf("%s\n", err)
+			continue
+		}
+
+		if *hold {
+			err = source.Stop(ctx)
+			if err != nil {
+				panic(err)
+			}
+			defer source.Start(ctx)
+		}
+
+		sources[i] = source
+	}
+
+	for _, s := range sources {
+		err := runContainerBackup(ctx, cli, *target, s)
 		if err != nil {
 			fmt.Printf("container backup failed; %s\n", err)
 		}
 	}
 }
 
-func runContainerBackup(ctx context.Context, cli docker.Client, target docker.Volume, container string) error {
-	source, err := docker.FindContainer(ctx, cli, container)
-	if err != nil {
-		return err
-	}
-
+func runContainerBackup(ctx context.Context, cli docker.Client, target docker.Volume, source *docker.Container) error {
 	backup, err := docker.NewBackupContainer(ctx, source, target)
 	if err != nil {
 		return err

@@ -59,10 +59,8 @@ func (c Container) Volumes() []string {
 
 type BackupContainer struct {
 	Container
-	sourceName    string
-	sourceVolumes []string
-	target        Volume
-	isDestroyed   bool
+	target Volume
+	source *Container
 }
 
 func NewBackupContainer(ctx context.Context, source *Container, target Volume) (*BackupContainer, error) {
@@ -93,7 +91,7 @@ func NewBackupContainer(ctx context.Context, source *Container, target Volume) (
 		return nil, err
 	}
 
-	return &BackupContainer{Container: *c, sourceVolumes: source.Volumes(), sourceName: source.Name, target: target}, nil
+	return &BackupContainer{Container: *c, source: source, target: target}, nil
 }
 
 func (c *BackupContainer) Destroy(ctx context.Context) error {
@@ -102,20 +100,17 @@ func (c *BackupContainer) Destroy(ctx context.Context) error {
 		return err
 	}
 
-	err = c.dClient.ContainerRemove(ctx, c.dContainer.ID, types.ContainerRemoveOptions{})
-	c.isDestroyed = err != nil
-
-	return err
+	return c.dClient.ContainerRemove(ctx, c.dContainer.ID, types.ContainerRemoveOptions{})
 }
 
 func (c BackupContainer) Backup(ctx context.Context) error {
 	var err error
 
-	for _, v := range c.sourceVolumes {
-		targetFolder := fmt.Sprintf("/target/%s/%s", c.dClient.Host, c.sourceName)
+	for _, v := range c.source.Volumes() {
+		targetFolder := fmt.Sprintf("/target/%s/%s", c.dClient.Host, c.source.Name)
 		backupFileName := fmt.Sprintf("%s_%s.tar.gz", time.Now().Format("20060102_150405"), v)
 
-		fmt.Printf("%s:%s >>> %s/%s/%s/%s\n", c.sourceName, v, c.target.Resource, c.dClient.Host, c.sourceName, backupFileName)
+		fmt.Printf("%s:%s >>> %s/%s/%s/%s\n", c.source.Name, v, c.target.Resource, c.dClient.Host, c.source.Name, backupFileName)
 
 		err = c.exec(ctx, []string{"mkdir", "-p", targetFolder})
 		if err != nil {
