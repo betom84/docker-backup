@@ -4,12 +4,21 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"time"
 
-	"github.com/betom84/docker_backup/utils"
+	"github.com/betom84/docker-backup/utils"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
+	"github.com/sirupsen/logrus"
+)
+
+type Label string
+
+var (
+	Enabled  Label = "de.betom.docker-backup.enabled"
+	Schedule Label = "de.betom.docker-backup.schedule"
+	Target   Label = "de.betom.docker-backup.target"
 )
 
 type Container struct {
@@ -18,7 +27,36 @@ type Container struct {
 	dClient    Client
 }
 
-func FindContainer(ctx context.Context, client Client, name string) (*Container, error) {
+func FindContainerByLabel(ctx context.Context, client Client, labels map[Label]string) ([]*Container, error) {
+	result := make([]*Container, 0, 5)
+
+	f := make([]filters.KeyValuePair, 0)
+	for k, v := range labels {
+		f = append(f, filters.Arg("label", fmt.Sprintf("%s=%s", k, v)))
+	}
+
+	containers, err := client.ContainerList(ctx, types.ContainerListOptions{
+		All:     true,
+		Filters: filters.NewArgs(f...),
+	})
+
+	if err != nil {
+		return result, err
+	}
+
+	for _, lookup := range containers {
+		name := lookup.ID
+		if len(lookup.Names) > 0 {
+			name = lookup.Names[0]
+		}
+
+		result = append(result, &Container{Name: name, dClient: client, dContainer: lookup})
+	}
+
+	return result, nil
+}
+
+func FindContainerByName(ctx context.Context, client Client, name string) (*Container, error) {
 	containers, err := client.ContainerList(ctx, types.ContainerListOptions{All: true})
 	if err != nil {
 		return nil, err
@@ -35,12 +73,46 @@ func FindContainer(ctx context.Context, client Client, name string) (*Container,
 	return nil, fmt.Errorf("container '%s' not found", name)
 }
 
+func Backup(ctx context.Context, cli Client, source *Container, target Volume) error {
+	backup, err := NewBackupContainer(ctx, source, target)
+	if err != nil {
+		return err
+	}
+	defer backup.Destroy(ctx)
+
+	err = backup.Start(ctx)
+	if err != nil {
+		return err
+	}
+
+	err = backup.Backup(ctx)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (c Container) Start(ctx context.Context) error {
-	return c.dClient.ContainerStart(ctx, c.dContainer.ID, types.ContainerStartOptions{})
+	err := c.dClient.ContainerStart(ctx, c.dContainer.ID, types.ContainerStartOptions{})
+
+	logrus.WithContext(ctx).WithFields(logrus.Fields{
+		"container": c.String(),
+		"error":     err,
+	}).Debug("container started")
+
+	return err
 }
 
 func (c Container) Stop(ctx context.Context) error {
-	return c.dClient.ContainerStop(ctx, c.dContainer.ID, nil)
+	err := c.dClient.ContainerStop(ctx, c.dContainer.ID, nil)
+
+	logrus.WithContext(ctx).WithFields(logrus.Fields{
+		"container": c.String(),
+		"error":     err,
+	}).Debug("container stopped")
+
+	return err
 }
 
 func (c Container) Volumes() []string {
@@ -55,6 +127,19 @@ func (c Container) Volumes() []string {
 	}
 
 	return v
+}
+
+func (c Container) Label(key Label, fallback string) string {
+	if v, ok := c.dContainer.Labels[string(key)]; ok {
+		return v
+	}
+
+	logrus.New().WithField("container", c.Name).Warningf("label '%s' not find, using fallback value '%s'", key, fallback)
+	return fallback
+}
+
+func (c Container) String() string {
+	return c.Name
 }
 
 type BackupContainer struct {
@@ -86,10 +171,16 @@ func NewBackupContainer(ctx context.Context, source *Container, target Volume) (
 		return nil, err
 	}
 
-	c, err := FindContainer(ctx, source.dClient, backupContainerName)
+	c, err := FindContainerByName(ctx, source.dClient, backupContainerName)
 	if err != nil {
 		return nil, err
 	}
+
+	logrus.WithContext(ctx).WithFields(logrus.Fields{
+		"container": backupContainerName,
+		"source":    source.String(),
+		"target":    target.String(),
+	}).Debugln("backup container created")
 
 	return &BackupContainer{Container: *c, source: source, target: target}, nil
 }
@@ -100,34 +191,53 @@ func (c *BackupContainer) Destroy(ctx context.Context) error {
 		return err
 	}
 
-	return c.dClient.ContainerRemove(ctx, c.dContainer.ID, types.ContainerRemoveOptions{})
+	err = c.dClient.ContainerRemove(ctx, c.dContainer.ID, types.ContainerRemoveOptions{})
+
+	logrus.WithContext(ctx).WithFields(logrus.Fields{
+		"container": c.String(),
+		"error":     err,
+	}).Debugln("container destroyed")
+
+	return err
 }
 
 func (c BackupContainer) Backup(ctx context.Context) error {
 	var err error
 
 	for _, v := range c.source.Volumes() {
-		targetFolder := fmt.Sprintf("/target/%s/%s", c.dClient.Host, c.source.Name)
+		targetFolder := fmt.Sprintf("/target/%s/%s", c.dClient.Hostname, c.source.Name)
 		backupFileName := fmt.Sprintf("%s_%s.tar.gz", time.Now().Format("20060102_150405"), v)
 
-		fmt.Printf("%s:%s >>> %s/%s/%s/%s\n", c.source.Name, v, c.target.Resource, c.dClient.Host, c.source.Name, backupFileName)
-
-		err = c.exec(ctx, []string{"mkdir", "-p", targetFolder})
-		if err != nil {
-			fmt.Println(err)
+		logFields := logrus.Fields{
+			"container": c.String,
+			"source":    fmt.Sprintf("%s:%s", c.source.Name, v),
+			"target":    fmt.Sprintf("%s/%s/%s/%s", c.target.Resource, c.dClient.Hostname, c.source.Name, backupFileName),
 		}
 
-		cmd := []string{
+		logrus.WithContext(ctx).WithFields(logFields).Debug("container volume backup started")
+
+		cmd := []string{"mkdir", "-p", targetFolder}
+		err = c.exec(ctx, cmd)
+		if err != nil {
+			logrus.WithContext(ctx).WithFields(logFields).WithField("cmd", cmd).Errorf("failed to create backup target folder; %v", err)
+			continue
+		}
+
+		cmd = []string{
 			"/bin/tar",
 			"czvf",
 			fmt.Sprintf("%s/%s", targetFolder, backupFileName),
 			fmt.Sprintf("--directory=/source/%s", v),
 			".",
 		}
+
 		err = c.exec(ctx, cmd)
 		if err != nil {
-			fmt.Println(err)
+			logrus.WithContext(ctx).WithFields(logFields).WithField("cmd", cmd).Errorf("failed to exec backup command; %v", err)
+			continue
 		}
+
+		logrus.WithContext(ctx).WithFields(logFields).Info("container volume backup finished")
 	}
 
 	return err
@@ -146,7 +256,10 @@ func (c BackupContainer) exec(ctx context.Context, cmd []string) error {
 	}
 
 	defer att.Close()
-	io.Copy(os.Stdout, att.Reader)
+
+	if logrus.GetLevel() == logrus.TraceLevel {
+		io.Copy(logrus.StandardLogger().Out, att.Reader)
+	}
 
 	return c.dClient.ContainerExecStart(ctx, execResp.ID, types.ExecStartCheck{})
 }

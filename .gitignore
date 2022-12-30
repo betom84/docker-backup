@@ -1,3 +1,6 @@
 .vscode/
+build/
 vendor/
 docker_backup
+main_test.go
+.envrc

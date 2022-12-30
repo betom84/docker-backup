@@ -6,6 +6,7 @@ import (
 	"regexp"
 
 	"github.com/docker/docker/api/types/volume"
+	"github.com/sirupsen/logrus"
 )
 
 type Volume struct {
@@ -55,9 +56,24 @@ func NewCifsVolume(ctx context.Context, client Client, adr CifsAddress, name str
 		return nil, err
 	}
 
-	return &Volume{Name: name, Resource: adr.String(), dClient: client}, nil
+	v := Volume{Name: name, Resource: adr.String(), dClient: client}
+
+	logrus.WithContext(ctx).WithField("volume", v.String()).Debugln("cifs volume created")
+
+	return &v, nil
 }
 
 func (v Volume) Destroy(ctx context.Context) error {
-	return v.dClient.VolumeRemove(ctx, v.Name, false)
+	err := v.dClient.VolumeRemove(ctx, v.Name, false)
+
+	logrus.WithContext(ctx).WithFields(logrus.Fields{
+		"volume": v.String(),
+		"error":  err,
+	}).Debugln("volume destroyed")
+
+	return err
+}
+
+func (v Volume) String() string {
+	return fmt.Sprintf("%s (%s)", v.Name, v.Resource)
 }

@@ -1,21 +1,37 @@
 package docker
 
 import (
-	"fmt"
+	"context"
 
 	"github.com/docker/docker/client"
+	"github.com/sirupsen/logrus"
 )
 
 type Client struct {
 	*client.Client
-	Host string
+	Hostname string
 }
 
-func NewClient(tcpHost string) (Client, error) {
-	cli, err := client.NewClientWithOpts(client.WithHost(fmt.Sprintf("tcp://%s:2375", tcpHost)), client.WithAPIVersionNegotiation())
+var DefaultDockerHost = client.DefaultDockerHost
+
+func NewClient(ctx context.Context, host string) (Client, error) {
+	cli, err := client.NewClientWithOpts(client.WithHost(host), client.WithAPIVersionNegotiation())
 	if err != nil {
 		return Client{}, err
 	}
 
-	return Client{cli, tcpHost}, nil
+	i, err := cli.Info(ctx)
+	if err != nil {
+		cli.Close()
+		return Client{}, err
+	}
+
+	logrus.WithField("host", i.Name).Debugln("docker client connection established")
+
+	return Client{cli, i.Name}, nil
+}
+
+func (c *Client) Close() {
+	logrus.WithField("hostname", c.Hostname).Debugln("docker client connection closed")
+	c.Client.Close()
 }
