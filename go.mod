@@ -1,4 +1,4 @@
-module github.com/betom84/docker_backup
+module github.com/betom84/docker-backup
 
 go 1.19
 

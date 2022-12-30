@@ -4,7 +4,7 @@ CLI Tool to backup content of Docker container volumes to CIFS/SMB network share
 
 ## Install
 ```
-go install github.com/betom84/docker_backup@latest
+go install github.com/betom84/docker-backup@latest
 ```
 
 ## Usage

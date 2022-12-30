@@ -3,7 +3,7 @@ package docker_test
 import (
 	"testing"
 
-	"github.com/betom84/docker_backup/docker"
+	"github.com/betom84/docker-backup/docker"
 	"github.com/stretchr/testify/assert"
 )
 
