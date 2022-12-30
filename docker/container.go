@@ -20,6 +20,7 @@ var (
 	Enabled  Label = "de.betom.docker-backup.enabled"
 	Schedule Label = "de.betom.docker-backup.schedule"
 	Target   Label = "de.betom.docker-backup.target"
+	Hold     Label = "de.betom.docker-backup.hold"
 )
 
 type Container struct {

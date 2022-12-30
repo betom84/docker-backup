@@ -64,28 +64,8 @@ func runDaemonCmd(cmd *cobra.Command, args []string) {
 		logFields["schedule"] = scheduleLabel
 
 		_, err = scheduler.Cron(scheduleLabel).Do(
-			func(ctx context.Context, cli docker.Client, c *docker.Container, target docker.CifsAddress) {
-				logEntry := logrus.WithContext(ctx).WithFields(logrus.Fields{
-					"hostname":  cli.Hostname,
-					"container": c.Name,
-					"target":    target.String(),
-				})
-
-				volume, err := docker.NewCifsVolume(ctx, cli, target, fmt.Sprintf("temp_backup_target_%s", c.Name))
-				if err != nil {
-					logEntry.Errorf("failed to create cifs backup volume; %v", err)
-					return
-				}
-				defer volume.Destroy(ctx)
-
-				err = docker.Backup(ctx, cli, c, *volume)
-				if err != nil {
-					logEntry.Errorf("container backup failed; %v", err)
-					return
-				}
-
-				logEntry.Infoln("container backup finished")
-			}, ctx, cli, c, target)
+			newSchedulerJob(ctx, cli, c, target, c.Label(docker.Hold, "") == "true"),
+		)
 
 		if err != nil {
 			logrus.WithContext(ctx).WithFields(logFields).Errorf("failed to schedule job; %v", err)
@@ -96,4 +76,38 @@ func runDaemonCmd(cmd *cobra.Command, args []string) {
 	}
 
 	scheduler.StartBlocking()
+}
+
+func newSchedulerJob(ctx context.Context, cli docker.Client, c *docker.Container, target docker.CifsAddress, hold bool) func() {
+	return func() {
+		logEntry := logrus.WithContext(ctx).WithFields(logrus.Fields{
+			"hostname":  cli.Hostname,
+			"container": c.Name,
+			"target":    target.String(),
+		})
+
+		volume, err := docker.NewCifsVolume(ctx, cli, target, fmt.Sprintf("temp_backup_target_%s", c.Name))
+		if err != nil {
+			logEntry.Errorf("failed to create cifs backup volume; %v", err)
+			return
+		}
+		defer volume.Destroy(ctx)
+
+		if hold {
+			err = c.Stop(ctx)
+			if err != nil {
+				logEntry.Errorf("failed to hold container for backup; %v", err)
+				return
+			}
+			defer c.Start(ctx)
+		}
+
+		err = docker.Backup(ctx, cli, c, *volume)
+		if err != nil {
+			logEntry.Errorf("container backup failed; %v", err)
+			return
+		}
+
+		logEntry.Infoln("container backup finished")
+	}
 }
