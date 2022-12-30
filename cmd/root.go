@@ -14,7 +14,7 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "docker_backup",
+	Use:   "docker-backup",
 	Short: "Manage volume backups for Docker hosts.",
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		return initLogger(cmd, args)
@@ -24,8 +24,6 @@ var rootCmd = &cobra.Command{
 func Execute() error {
 	rootCmd.PersistentFlags().StringVarP(&verbosity, "verbosity", "v", logrus.InfoLevel.String(), fmt.Sprintf("%s", logrus.AllLevels))
 	rootCmd.PersistentFlags().StringVar(&host, "host", docker.DefaultDockerHost, "Docker host, e.g. tcp://docker.host:2735")
-
-	rootCmd.MarkPersistentFlagRequired("host")
 
 	rootCmd.AddCommand(backupCmd)
 	rootCmd.AddCommand(daemonCmd)

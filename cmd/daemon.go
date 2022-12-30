@@ -16,6 +16,16 @@ var daemonCmd = &cobra.Command{
 	Run: runDaemonCmd,
 }
 
+var (
+	defaultTarget   string
+	defaultSchedule string
+)
+
+func init() {
+	daemonCmd.Flags().StringVar(&defaultTarget, "defaultTarget", "", "Default CIFS network share address like user:pass@host/path if not defined by docker label")
+	daemonCmd.Flags().StringVar(&defaultSchedule, "defaultschedule", "", "Default backup schedule if not defined by docker label")
+}
+
 func runDaemonCmd(cmd *cobra.Command, args []string) {
 	ctx := cmd.Context()
 
@@ -42,13 +52,13 @@ func runDaemonCmd(cmd *cobra.Command, args []string) {
 	for _, c := range containers {
 		logFields["container"] = c.Name
 
-		target, err := docker.NewCifsAddress(c.Label(docker.Target, ""))
+		target, err := docker.NewCifsAddress(c.Label(docker.Target, defaultTarget))
 		if err != nil {
 			logrus.WithContext(ctx).WithFields(logFields).Errorf("failed to parse target address; %v", err)
 			continue
 		}
 
-		scheduleLabel := c.Label(docker.Schedule, "")
+		scheduleLabel := c.Label(docker.Schedule, defaultSchedule)
 
 		logFields["target"] = target.String()
 		logFields["schedule"] = scheduleLabel

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/betom84/docker-backup/utils"
@@ -47,7 +48,7 @@ func FindContainerByLabel(ctx context.Context, client Client, labels map[Label]s
 	for _, lookup := range containers {
 		name := lookup.ID
 		if len(lookup.Names) > 0 {
-			name = lookup.Names[0]
+			name = strings.TrimPrefix(lookup.Names[0], "/")
 		}
 
 		result = append(result, &Container{Name: name, dClient: client, dContainer: lookup})
@@ -177,9 +178,9 @@ func NewBackupContainer(ctx context.Context, source *Container, target Volume) (
 	}
 
 	logrus.WithContext(ctx).WithFields(logrus.Fields{
-		"container": backupContainerName,
-		"source":    source.String(),
-		"target":    target.String(),
+		"container":    backupContainerName,
+		"source":       source.String(),
+		"targetVolume": target.String(),
 	}).Debugln("backup container created")
 
 	return &BackupContainer{Container: *c, source: source, target: target}, nil
@@ -209,12 +210,12 @@ func (c BackupContainer) Backup(ctx context.Context) error {
 		backupFileName := fmt.Sprintf("%s_%s.tar.gz", time.Now().Format("20060102_150405"), v)
 
 		logFields := logrus.Fields{
-			"container": c.String,
+			"container": c.String(),
 			"source":    fmt.Sprintf("%s:%s", c.source.Name, v),
 			"target":    fmt.Sprintf("%s/%s/%s/%s", c.target.Resource, c.dClient.Hostname, c.source.Name, backupFileName),
 		}
 
-		logrus.WithContext(ctx).WithFields(logFields).Debug("container volume backup started")
+		logrus.WithContext(ctx).WithFields(logFields).Debug("volume backup started")
 
 		cmd := []string{"mkdir", "-p", targetFolder}
 		err = c.exec(ctx, cmd)
@@ -237,7 +238,7 @@ func (c BackupContainer) Backup(ctx context.Context) error {
 			continue
 		}
 
-		logrus.WithContext(ctx).WithFields(logFields).Info("container volume backup finished")
+		logrus.WithContext(ctx).WithFields(logFields).Info("volume backup finished")
 	}
 
 	return err

@@ -26,7 +26,7 @@ func NewClient(ctx context.Context, host string) (Client, error) {
 		return Client{}, err
 	}
 
-	logrus.WithField("host", i.Name).Debugln("docker client connection established")
+	logrus.WithField("hostname", i.Name).Debugln("docker client connection established")
 
 	return Client{cli, i.Name}, nil
 }
