@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/betom84/docker_backup/docker"
-	"github.com/betom84/docker_backup/utils"
+	"github.com/betom84/docker-backup/docker"
+	"github.com/betom84/docker-backup/utils"
 )
 
 var (
