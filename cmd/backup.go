@@ -1,18 +1,12 @@
 package cmd
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/betom84/docker-backup/docker"
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
-
-var backupCmd = &cobra.Command{
-	Use:   "backup",
-	Short: "Backup Docker container volumes to CIFS network share",
-	Run:   runBackupCmd,
-}
 
 var (
 	container string
@@ -20,60 +14,64 @@ var (
 	hold      bool
 )
 
-func init() {
+func NewBackupCommand() *cobra.Command {
+	backupCmd := &cobra.Command{
+		Use:   "backup",
+		Short: "Backup Docker container volumes to CIFS network share",
+		RunE:  runBackupCmd,
+	}
+
 	backupCmd.Flags().StringVar(&container, "container", "", "Comma separated list of Docker container names (required)")
-	backupCmd.Flags().StringVar(&target, "target", "", "CIFS network share address like user:pass@host/path (required)")
-	backupCmd.Flags().BoolVar(&hold, "hold", false, "Hold container during backup")
+	backupCmd.Flags().StringVar(&target, "target", "", "CIFS network share address like csif://user:pass@host/path (required)")
+	backupCmd.Flags().BoolVar(&hold, "hold", false, "Hold containers during backup")
 
 	backupCmd.MarkFlagRequired("container")
 	backupCmd.MarkFlagRequired("target")
+
+	return backupCmd
 }
 
-func runBackupCmd(cmd *cobra.Command, args []string) {
+func runBackupCmd(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
 	cli, err := docker.NewClient(ctx, host)
 	if err != nil {
-		logrus.WithContext(ctx).Fatalf("failed to init docker client; %v", err)
+		return fmt.Errorf("failed to init docker client; %w", err)
 	}
 	defer cli.Close()
 
-	targetAdr, err := docker.NewCifsAddress(target)
+	target, err := docker.NewVolume(ctx, cli, target, "backup_volume")
 	if err != nil {
-		logrus.WithContext(ctx).Errorf("failed to parse target address; %v", err)
-	}
-
-	target, err := docker.NewCifsVolume(ctx, cli, targetAdr, "backup_volume")
-	if err != nil {
-		logrus.WithContext(ctx).Errorf("failed to create cifs backup volume; %v", err)
+		return fmt.Errorf("failed to init backup volume; %w", err)
 	}
 	defer target.Destroy(ctx)
 
 	containers := strings.Split(container, ",")
-	sources := make([]*docker.Container, len(containers))
+	sources := make([]*docker.Container, 0, len(containers))
 
-	for i, c := range containers {
+	for _, c := range containers {
 		source, err := docker.FindContainerByName(ctx, cli, c)
 		if err != nil {
-			logrus.WithContext(ctx).Error(err)
-			continue
+			return err
 		}
 
 		if hold {
 			err = source.Stop(ctx)
 			if err != nil {
-				logrus.WithContext(ctx).WithField("container", c).Fatalf("failed to stop container; %v", err)
+				return fmt.Errorf("failed to stop container; %w", err)
 			}
 			defer source.Start(ctx)
 		}
 
-		sources[i] = source
+		sources = append(sources, source)
 	}
 
 	for _, s := range sources {
-		err := docker.Backup(ctx, cli, s, *target)
+		err := docker.Backup(ctx, cli, s, target)
 		if err != nil {
-			logrus.Error(err)
+			return fmt.Errorf("backup failed; %w", err)
 		}
 	}
+
+	return nil
 }

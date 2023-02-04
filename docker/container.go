@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	"github.com/betom84/docker-backup/utils"
 	"github.com/docker/docker/api/types"
@@ -21,12 +20,50 @@ var (
 	Schedule Label = "de.betom.docker-backup.schedule"
 	Target   Label = "de.betom.docker-backup.target"
 	Hold     Label = "de.betom.docker-backup.hold"
+	Group    Label = "de.betom.docker-backup.group"
 )
 
 type Container struct {
 	Name       string
 	dContainer types.Container
 	dClient    Client
+}
+
+func NewBusyboxContainer(ctx context.Context, dClient Client, name string, binds []string) (*Container, error) {
+	imageName := "busybox"
+	cmd := []string{"/bin/sh", "-c", "tail -f /dev/null"}
+
+	out, err := dClient.ImagePull(ctx, imageName, types.ImagePullOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer out.Close()
+
+	_, err = dClient.ContainerCreate(ctx, &container.Config{Image: imageName, Cmd: cmd}, &container.HostConfig{Binds: binds}, nil, nil, name)
+	if err != nil {
+		return nil, err
+	}
+
+	return FindContainerByName(ctx, dClient, name)
+}
+
+func FindContainerGroupsByLabel(ctx context.Context, client Client, labels map[Label]string) (map[string][]*Container, error) {
+	result := make(map[string][]*Container, 0)
+
+	containers, err := FindContainerByLabel(ctx, client, labels)
+	if err != nil {
+		return result, err
+	}
+
+	for _, c := range containers {
+		if l, ok := result[c.dContainer.Labels[string(Group)]]; ok {
+			result[c.dContainer.Labels[string(Group)]] = append(l, c)
+		} else {
+			result[c.dContainer.Labels[string(Group)]] = []*Container{c}
+		}
+	}
+
+	return result, nil
 }
 
 func FindContainerByLabel(ctx context.Context, client Client, labels map[Label]string) ([]*Container, error) {
@@ -75,26 +112,6 @@ func FindContainerByName(ctx context.Context, client Client, name string) (*Cont
 	return nil, fmt.Errorf("container '%s' not found", name)
 }
 
-func Backup(ctx context.Context, cli Client, source *Container, target Volume) error {
-	backup, err := NewBackupContainer(ctx, source, target)
-	if err != nil {
-		return err
-	}
-	defer backup.Destroy(ctx)
-
-	err = backup.Start(ctx)
-	if err != nil {
-		return err
-	}
-
-	err = backup.Backup(ctx)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
 func (c Container) Start(ctx context.Context) error {
 	err := c.dClient.ContainerStart(ctx, c.dContainer.ID, types.ContainerStartOptions{})
 
@@ -117,77 +134,7 @@ func (c Container) Stop(ctx context.Context) error {
 	return err
 }
 
-func (c Container) Volumes() []string {
-	var v []string = make([]string, 0, 3)
-
-	for _, m := range c.dContainer.Mounts {
-		if m.Type != "volume" {
-			continue
-		}
-
-		v = append(v, m.Name)
-	}
-
-	return v
-}
-
-func (c Container) Label(key Label, fallback string) string {
-	if v, ok := c.dContainer.Labels[string(key)]; ok {
-		return v
-	}
-
-	logrus.New().WithField("container", c.Name).Warningf("label '%s' not find, using fallback value '%s'", key, fallback)
-	return fallback
-}
-
-func (c Container) String() string {
-	return c.Name
-}
-
-type BackupContainer struct {
-	Container
-	target Volume
-	source *Container
-}
-
-func NewBackupContainer(ctx context.Context, source *Container, target Volume) (*BackupContainer, error) {
-	BackupContainerImageName := "busybox"
-
-	out, err := source.dClient.ImagePull(ctx, BackupContainerImageName, types.ImagePullOptions{})
-	if err != nil {
-		return nil, err
-	}
-	defer out.Close()
-
-	binds := make([]string, 0, 5)
-	binds = append(binds, fmt.Sprintf("%s:/target", target.Name))
-	for _, bv := range source.Volumes() {
-		binds = append(binds, fmt.Sprintf("%s:/source/%s:ro", bv, bv))
-	}
-
-	backupContainerName := fmt.Sprintf("temp_docker_backup_%s", time.Now().Format("20060102_150405"))
-	cmd := []string{"/bin/sh", "-c", "tail -f /dev/null"}
-
-	_, err = source.dClient.ContainerCreate(ctx, &container.Config{Image: BackupContainerImageName, Cmd: cmd}, &container.HostConfig{Binds: binds}, nil, nil, backupContainerName)
-	if err != nil {
-		return nil, err
-	}
-
-	c, err := FindContainerByName(ctx, source.dClient, backupContainerName)
-	if err != nil {
-		return nil, err
-	}
-
-	logrus.WithContext(ctx).WithFields(logrus.Fields{
-		"container":    backupContainerName,
-		"source":       source.String(),
-		"targetVolume": target.String(),
-	}).Debugln("backup container created")
-
-	return &BackupContainer{Container: *c, source: source, target: target}, nil
-}
-
-func (c *BackupContainer) Destroy(ctx context.Context) error {
+func (c Container) Destroy(ctx context.Context) error {
 	err := c.Stop(ctx)
 	if err != nil {
 		return err
@@ -203,49 +150,21 @@ func (c *BackupContainer) Destroy(ctx context.Context) error {
 	return err
 }
 
-func (c BackupContainer) Backup(ctx context.Context) error {
-	var err error
+func (c Container) Volumes() []string {
+	var v []string = make([]string, 0, 3)
 
-	for _, v := range c.source.Volumes() {
-		targetFolder := fmt.Sprintf("/target/%s/%s", c.dClient.Hostname, c.source.Name)
-		backupFileName := fmt.Sprintf("%s_%s.tar.gz", time.Now().Format("20060102_150405"), v)
-
-		logFields := logrus.Fields{
-			"container": c.String(),
-			"source":    fmt.Sprintf("%s:%s", c.source.Name, v),
-			"target":    fmt.Sprintf("%s/%s/%s/%s", c.target.Resource, c.dClient.Hostname, c.source.Name, backupFileName),
-		}
-
-		logrus.WithContext(ctx).WithFields(logFields).Debug("volume backup started")
-
-		cmd := []string{"mkdir", "-p", targetFolder}
-		err = c.exec(ctx, cmd)
-		if err != nil {
-			logrus.WithContext(ctx).WithFields(logFields).WithField("cmd", cmd).Errorf("failed to create backup target folder; %v", err)
+	for _, m := range c.dContainer.Mounts {
+		if m.Type != "volume" {
 			continue
 		}
 
-		cmd = []string{
-			"/bin/tar",
-			"czvf",
-			fmt.Sprintf("%s/%s", targetFolder, backupFileName),
-			fmt.Sprintf("--directory=/source/%s", v),
-			".",
-		}
-
-		err = c.exec(ctx, cmd)
-		if err != nil {
-			logrus.WithContext(ctx).WithFields(logFields).WithField("cmd", cmd).Errorf("failed to exec backup command; %v", err)
-			continue
-		}
-
-		logrus.WithContext(ctx).WithFields(logFields).Info("volume backup finished")
+		v = append(v, m.Name)
 	}
 
-	return err
+	return v
 }
 
-func (c BackupContainer) exec(ctx context.Context, cmd []string) error {
+func (c Container) exec(ctx context.Context, cmd []string) error {
 	execConfig := types.ExecConfig{AttachStdout: true, AttachStderr: true, Cmd: cmd}
 	execResp, err := c.dClient.ContainerExecCreate(ctx, c.dContainer.ID, execConfig)
 	if err != nil {
@@ -264,4 +183,22 @@ func (c BackupContainer) exec(ctx context.Context, cmd []string) error {
 	}
 
 	return c.dClient.ContainerExecStart(ctx, execResp.ID, types.ExecStartCheck{})
+}
+
+func (c Container) Label(key Label, fallback string) string {
+	if v, ok := c.dContainer.Labels[string(key)]; ok && v != "" {
+		return v
+	}
+
+	logrus.New().WithField("container", c.Name).Warningf("label '%s' not found or empty, using fallback value '%s'", key, fallback)
+	return fallback
+}
+
+func (c Container) HasLabel(key Label) bool {
+	_, ok := c.dContainer.Labels[string(key)]
+	return ok
+}
+
+func (c Container) String() string {
+	return c.Name
 }

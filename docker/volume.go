@@ -3,77 +3,96 @@ package docker
 import (
 	"context"
 	"fmt"
-	"regexp"
+	"net/url"
 
-	"github.com/docker/docker/api/types/volume"
+	dv "github.com/docker/docker/api/types/volume"
 	"github.com/sirupsen/logrus"
 )
 
-type Volume struct {
-	Name     string
-	Resource string
-	dClient  Client
+type Volume interface {
+	Create(context.Context) error
+	Destroy(context.Context) error
+	String() string
+	GetName() string
+	URL() *url.URL
 }
 
-type CifsAddress struct {
-	Host     string
-	Path     string
-	Username string
-	Password string
-}
+func NewVolume(ctx context.Context, client Client, target string, name string) (Volume, error) {
+	var err error
+	var v Volume
 
-func (a CifsAddress) String() string {
-	return fmt.Sprintf("%s:*****@%s/%s", a.Username, a.Host, a.Path)
-}
-
-func NewCifsAddress(address string) (CifsAddress, error) {
-	r, err := regexp.Compile(`^(.*)[:](.*)[@]([a-zA-Z0-9.]*)[/](.*)$`)
-	if err != nil {
-		return CifsAddress{}, err
-	}
-
-	m := r.FindStringSubmatch(address)
-	if m == nil || len(m) < 5 {
-		return CifsAddress{}, fmt.Errorf("invalid cifs address format; %s", m)
-	}
-
-	return CifsAddress{Username: m[1], Password: m[2], Host: m[3], Path: m[4]}, nil
-}
-
-func NewCifsVolume(ctx context.Context, client Client, adr CifsAddress, name string) (*Volume, error) {
-	_, err := client.VolumeCreate(ctx, volume.VolumeCreateBody{
-		Driver: "local",
-		DriverOpts: map[string]string{
-			"device": fmt.Sprintf("//%s/%s", adr.Host, adr.Path),
-			"o":      fmt.Sprintf("addr=%s,username=%s,password=%s,file_mode=0777,dir_mode=0777,vers=1.0", adr.Host, adr.Username, adr.Password),
-			"type":   "cifs",
-		},
-		Labels: map[string]string{},
-		Name:   name,
-	})
-
+	t, err := url.ParseRequestURI(target)
 	if err != nil {
 		return nil, err
 	}
 
-	v := Volume{Name: name, Resource: adr.String(), dClient: client}
+	switch t.Scheme {
+	case "local":
+		v = volume{name: t.Path, url: t}
+	case "cifs":
+		v = cifsVolume{volume{name: name, url: t, client: client}}
+		logrus.WithContext(ctx).WithField("volume", v.String()).Debugln("cifs volume created")
+	default:
+		err = fmt.Errorf("unsupported url scheme")
+	}
 
-	logrus.WithContext(ctx).WithField("volume", v.String()).Debugln("cifs volume created")
-
-	return &v, nil
+	return v, err
 }
 
-func (v Volume) Destroy(ctx context.Context) error {
-	err := v.dClient.VolumeRemove(ctx, v.Name, false)
+type volume struct {
+	name   string
+	url    *url.URL
+	client Client
+}
 
-	logrus.WithContext(ctx).WithFields(logrus.Fields{
-		"volume": v.String(),
-		"error":  err,
-	}).Debugln("volume destroyed")
+func (v volume) Create(ctx context.Context) error {
+	return nil
+}
+func (v volume) Destroy(ctx context.Context) error {
+	return nil
+}
+
+func (v volume) String() string {
+	return fmt.Sprintf("%s (%s)", v.name, v.url.String())
+}
+
+func (v volume) GetName() string {
+	return v.name
+}
+
+func (v volume) URL() *url.URL {
+	return v.url
+}
+
+type cifsVolume struct {
+	volume
+}
+
+func (v cifsVolume) Create(ctx context.Context) error {
+	username := v.url.User.Username()
+	password, _ := v.url.User.Password()
+
+	_, err := v.client.VolumeCreate(ctx, dv.VolumeCreateBody{
+		Driver: "local",
+		DriverOpts: map[string]string{
+			"device": fmt.Sprintf("//%s/%s", v.url.Host, v.url.Path),
+			"o":      fmt.Sprintf("addr=%s,username=%s,password=%s,file_mode=0777,dir_mode=0777", v.url.Host, username, password),
+			"type":   "cifs",
+		},
+		Labels: map[string]string{},
+		Name:   v.name,
+	})
 
 	return err
 }
 
-func (v Volume) String() string {
-	return fmt.Sprintf("%s (%s)", v.Name, v.Resource)
+func (v cifsVolume) Destroy(ctx context.Context) error {
+	err := v.client.VolumeRemove(ctx, v.name, false)
+
+	logrus.WithContext(ctx).WithFields(logrus.Fields{
+		"volume": v.String(),
+		"error":  err,
+	}).Debugln("cifs volume destroyed")
+
+	return err
 }

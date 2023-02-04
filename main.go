@@ -1,16 +1,15 @@
 package main
 
 import (
-	"fmt"
-	"os"
+	"context"
 
 	"github.com/betom84/docker-backup/cmd"
+	"github.com/sirupsen/logrus"
 )
 
 func main() {
-	err := cmd.Execute()
+	err := cmd.Execute(context.Background())
 	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
+		logrus.Fatal(err)
 	}
 }
